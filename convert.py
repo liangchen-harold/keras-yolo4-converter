@@ -5,6 +5,10 @@ import numpy as np
 from keras import backend as K
 from keras.models import load_model
 from keras.layers import Input
+from keras.layers import Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, MaxPooling2D, Activation, Multiply
+import tensorflow as tf
+from tensorflow.python.framework import graph_util
+K.set_learning_phase(0)
 
 from yolo4.model import yolo_eval, yolo4_body
 from yolo4.utils import letterbox_image
@@ -14,6 +18,7 @@ from timeit import default_timer as timer
 import matplotlib.pyplot as plt
 
 from operator import itemgetter
+import argparse
 
 class Yolo4(object):
     def get_class(self):
@@ -51,7 +56,7 @@ class Yolo4(object):
         self.sess = K.get_session()
 
         # Load model, or construct model and load weights.
-        self.yolo4_model = yolo4_body(Input(shape=(608, 608, 3)), num_anchors//3, num_classes)
+        self.yolo4_model = yolo4_body(Input(shape=(self.input_size[1], self.input_size[0], 3)), num_anchors//3, num_classes, self.alpha, True)
 
         # Read and convert darknet weight
         print('Loading weights.')
@@ -137,6 +142,17 @@ class Yolo4(object):
 
         self.yolo4_model.save(self.model_path)
 
+        all_output_layer = self.yolo4_model.outputs
+
+        output_node_names = [n.name.split(':')[0] for n in all_output_layer]
+        print(output_node_names)
+        with open(self.output_layer_file, 'w') as f:
+            f.write(' '.join(output_node_names))
+        pb_path = '.'.join(self.model_path.split('.')[0:-1]) + '.pb'
+        frozen_graph = self.freeze_session(output_names=output_node_names)
+        tf.train.write_graph(frozen_graph, os.path.dirname(self.model_path), pb_path, as_text=False)
+        writer = tf.summary.FileWriter(os.path.dirname(self.model_path), frozen_graph)
+        writer.close()
 
         if self.gpu_num>=2:
             self.yolo4_model = multi_gpu_model(self.yolo4_model, gpus=self.gpu_num)
@@ -146,30 +162,50 @@ class Yolo4(object):
                 len(self.class_names), self.input_image_shape,
                 score_threshold=self.score)
 
-    def __init__(self, score, iou, anchors_path, classes_path, model_path, weights_path, gpu_num=1):
+    def freeze_session(self, output_names=None):
+        graph = self.sess.graph
+        with graph.as_default():
+            freeze_var_names = list(set(v.op.name for v in tf.global_variables()))
+            output_names = output_names or []
+            output_names += [v.op.name for v in tf.global_variables()]
+            # Graph -> GraphDef ProtoBuf
+            input_graph_def = graph.as_graph_def()
+            frozen_graph = graph_util.convert_variables_to_constants(self.sess, input_graph_def, output_names, freeze_var_names)
+            return frozen_graph
+
+    def __init__(self, score, iou, input_size, anchors_path, classes_path, model_path, weights_path, output_layer_file, alpha=1, gpu_num=1):
         self.score = score
         self.iou = iou
+        self.input_size = input_size
         self.anchors_path = anchors_path
         self.classes_path = classes_path
         self.weights_path = weights_path
         self.model_path = model_path
         self.gpu_num = gpu_num
+        self.alpha = alpha
+        self.output_layer_file = output_layer_file
         self.load_yolo()
 
     def close_session(self):
         self.sess.close()
 
 if __name__ == '__main__':
-    model_path = 'yolo4_weight.h5'
-    anchors_path = 'model_data/yolo4_anchors.txt'
-    classes_path = 'model_data/coco_classes.txt'
-    weights_path = 'yolov4.weights'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--alpha", type = float, default = 1)
+    parser.add_argument("--model_path", type = str, default = 'yolov4.weights')
+    parser.add_argument("--anchors_path", type = str, default = 'model_data/yolo4_anchors.txt')
+    parser.add_argument("--classes_path", type = str, default = 'model_data/coco_classes.txt')
+    parser.add_argument("--input_size", nargs='*', type=int, default=[512, 288]) # skip images in each cats for coco
+    parser.add_argument("-o", type = str, default = 'yolo4_weight.h5')
+    parser.add_argument("--output_layer_file", type = str, default = 'outputs.txt')
+    args = parser.parse_args()
+    print(args)
 
     score = 0.5
     iou = 0.5
 
-    model_image_size = (608, 608)
+    input_size = (args.input_size[0], args.input_size[1])
 
-    yolo4_model = Yolo4(score, iou, anchors_path, classes_path, model_path, weights_path)
+    yolo4_model = Yolo4(score, iou, input_size, args.anchors_path, args.classes_path, args.o, args.model_path, args.output_layer_file, alpha=args.alpha)
 
     yolo4_model.close_session()

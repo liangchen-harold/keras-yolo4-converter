@@ -12,6 +12,8 @@ from yolo4.utils import letterbox_image
 from PIL import Image, ImageFont, ImageDraw
 from timeit import default_timer as timer
 import matplotlib.pyplot as plt
+import argparse
+import cv2
 
 class Yolo4(object):
     def get_class(self):
@@ -34,6 +36,7 @@ class Yolo4(object):
 
         self.class_names = self.get_class()
         self.anchors = self.get_anchors()
+        print('self.anchors', self.anchors)
 
         num_anchors = len(self.anchors)
         num_classes = len(self.class_names)
@@ -49,7 +52,7 @@ class Yolo4(object):
         self.sess = K.get_session()
 
         # Load model, or construct model and load weights.
-        self.yolo4_model = yolo4_body(Input(shape=(608, 608, 3)), num_anchors//3, num_classes)
+        self.yolo4_model = yolo4_body(Input(shape=(self.input_size[1], self.input_size[0], 3)), num_anchors//3, num_classes, self.alpha, True)
         self.yolo4_model.load_weights(model_path)
 
         print('{} model, anchors, and classes loaded.'.format(model_path))
@@ -62,13 +65,15 @@ class Yolo4(object):
                 len(self.class_names), self.input_image_shape,
                 score_threshold=self.score)
 
-    def __init__(self, score, iou, anchors_path, classes_path, model_path, gpu_num=1):
+    def __init__(self, score, iou, input_size, anchors_path, classes_path, model_path, alpha=1, gpu_num=1):
         self.score = score
         self.iou = iou
+        self.input_size = input_size
         self.anchors_path = anchors_path
         self.classes_path = classes_path
         self.model_path = model_path
         self.gpu_num = gpu_num
+        self.alpha = alpha
         self.load_yolo()
 
     def close_session(self):
@@ -94,7 +99,7 @@ class Yolo4(object):
 
         print('Found {} boxes for {}'.format(len(out_boxes), 'img'))
 
-        font = ImageFont.truetype(font='font/FiraMono-Medium.otf',
+        font = ImageFont.truetype(font='FreeSerif.ttf',
                     size=np.floor(3e-2 * image.size[1] + 0.5).astype('int32'))
         thickness = (image.size[0] + image.size[1]) // 300
 
@@ -112,7 +117,7 @@ class Yolo4(object):
             left = max(0, np.floor(left + 0.5).astype('int32'))
             bottom = min(image.size[1], np.floor(bottom + 0.5).astype('int32'))
             right = min(image.size[0], np.floor(right + 0.5).astype('int32'))
-            print(label, (left, top), (right, bottom))
+            print(label, (left, top), (right-left, bottom-top))
 
             if top - label_size[1] >= 0:
                 text_origin = np.array([left, top - label_size[1]])
@@ -135,27 +140,56 @@ class Yolo4(object):
         return image
 
 if __name__ == '__main__':
-    model_path = 'yolo4_weight.h5'
-    anchors_path = 'model_data/yolo4_anchors.txt'
-    classes_path = 'model_data/coco_classes.txt'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--alpha", type = float, default = 1)
+    parser.add_argument("--model_path", type = str, default = 'yolov4.h5')
+    parser.add_argument("--anchors_path", type = str, default = 'model_data/yolo4_anchors.txt')
+    parser.add_argument("--classes_path", type = str, default = 'model_data/coco_classes.txt')
+    parser.add_argument("--input_size", nargs='*', type=int, default=[512, 288]) # skip images in each cats for coco
+    parser.add_argument("--thd", type=float, default=0.5)
+    parser.add_argument("-i", type = str, default = '')
+    parser.add_argument("-o", type = str, default = '')
+    args = parser.parse_args()
+    print(args)
 
-    score = 0.5
     iou = 0.5
 
-    model_image_size = (608, 608)
+    input_size = (args.input_size[0], args.input_size[1])
 
-    yolo4_model = Yolo4(score, iou, anchors_path, classes_path, model_path)
+    yolo4_model = Yolo4(args.thd, iou, input_size, args.anchors_path, args.classes_path, args.model_path, alpha=args.alpha)
+
+
+    if len(args.i) == 0:
+        cap = cv2.VideoCapture(0)
+    else:
+        cap = cv2.VideoCapture(args.i)
+
+    if (cap.isOpened() == False):
+        print("Unable to read camera feed")
+        exit(0)
+
+    if len(args.o) != 0:
+        videoWriter = cv2.VideoWriter(args.o, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), 30, input_size)
+        print('[video]', videoWriter)
 
     while True:
-        img = input('Input image filename:')
-        try:
-            image = Image.open(img)
-        except:
-            print('Open Error! Try again!')
-            continue
-        else:
-            result = yolo4_model.detect_image(image, model_image_size=model_image_size)
-            plt.imshow(result)
-            plt.show()
+        ret, img = cap.read()
+        if not ret:
+            break
+
+        img = cv2.resize(img, input_size, interpolation=cv2.INTER_AREA)
+        img = img[...,::-1]
+        result = yolo4_model.detect_image(Image.fromarray(img), model_image_size=tuple(reversed(input_size)))
+        # plt.imshow(result)
+        # plt.show()
+        result = np.asarray(result)[...,::-1]
+        cv2.imshow('r', result)
+        if (cv2.waitKey(1) & 0xFF == ord('q')):
+            if len(args.o) != 0:
+                videoWriter.release()
+            exit()
+
+        if len(args.o) != 0:
+            videoWriter.write(result)
 
     yolo4_model.close_session()

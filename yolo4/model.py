@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from keras import backend as K
 from keras.engine.base_layer import Layer
-from keras.layers import Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, MaxPooling2D
+from keras.layers import Conv2D, Add, ZeroPadding2D, UpSampling2D, Concatenate, MaxPooling2D, Activation
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.normalization import BatchNormalization
 from keras.models import Model
@@ -61,6 +61,15 @@ def DarknetConv2D_BN_Leaky(*args, **kwargs):
         BatchNormalization(),
         LeakyReLU(alpha=0.1))
 
+def DarknetConv2D_BN_Relu(*args, **kwargs):
+    """Darknet Convolution2D followed by BatchNormalization and LeakyReLU."""
+    no_bias_kwargs = {'use_bias': False}
+    no_bias_kwargs.update(kwargs)
+    return compose(
+        DarknetConv2D(*args, **no_bias_kwargs),
+        BatchNormalization(),
+        Activation('relu'))
+
 def DarknetConv2D_BN_Mish(*args, **kwargs):
     """Darknet Convolution2D followed by BatchNormalization and LeakyReLU."""
     no_bias_kwargs = {'use_bias': False}
@@ -86,14 +95,14 @@ def resblock_body(x, num_filters, num_blocks, all_narrow=True):
     route = Concatenate()([postconv, shortconv])
     return DarknetConv2D_BN_Mish(num_filters, (1,1))(route)
 
-def darknet_body(x):
+def darknet_body(x, alpha):
     '''Darknent body having 52 Convolution2D layers'''
-    x = DarknetConv2D_BN_Mish(32, (3,3))(x)
-    x = resblock_body(x, 64, 1, False)
-    x = resblock_body(x, 128, 2)
-    x = resblock_body(x, 256, 8)
-    x = resblock_body(x, 512, 8)
-    x = resblock_body(x, 1024, 4)
+    x = DarknetConv2D_BN_Mish(int(32*alpha), (3,3))(x)
+    x = resblock_body(x, int(64*alpha), 1, False)
+    x = resblock_body(x, int(128*alpha), 2)
+    x = resblock_body(x, int(256*alpha), 8)
+    x = resblock_body(x, int(512*alpha), 8)
+    x = resblock_body(x, int(1024*alpha), 4)
     return x
 
 def make_last_layers(x, num_filters, out_filters):
@@ -110,72 +119,77 @@ def make_last_layers(x, num_filters, out_filters):
     return x, y
 
 
-def yolo4_body(inputs, num_anchors, num_classes):
+def yolo4_body(inputs, num_anchors, num_classes, alpha = 1, use_relu = False):
+    global DarknetConv2D_BN_Leaky, DarknetConv2D_BN_Mish, DarknetConv2D_BN_Relu
+    if (use_relu):
+        DarknetConv2D_BN_Leaky = DarknetConv2D_BN_Relu
+        DarknetConv2D_BN_Mish = DarknetConv2D_BN_Relu
+
     """Create YOLO_V4 model CNN body in Keras."""
-    darknet = Model(inputs, darknet_body(inputs))
+    darknet = Model(inputs, darknet_body(inputs, alpha))
 
     #19x19 head
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(darknet.output)
-    y19 = DarknetConv2D_BN_Leaky(1024, (3,3))(y19)
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(darknet.output)
+    y19 = DarknetConv2D_BN_Leaky(int(1024*alpha), (3,3))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
     maxpool1 = MaxPooling2D(pool_size=(13,13), strides=(1,1), padding='same')(y19)
     maxpool2 = MaxPooling2D(pool_size=(9,9), strides=(1,1), padding='same')(y19)
     maxpool3 = MaxPooling2D(pool_size=(5,5), strides=(1,1), padding='same')(y19)
     y19 = Concatenate()([maxpool1, maxpool2, maxpool3, y19])
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
-    y19 = DarknetConv2D_BN_Leaky(1024, (3,3))(y19)
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(1024*alpha), (3,3))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
 
-    y19_upsample = compose(DarknetConv2D_BN_Leaky(256, (1,1)), UpSampling2D(2))(y19)
+    y19_upsample = compose(DarknetConv2D_BN_Leaky(int(256*alpha), (1,1)), UpSampling2D(2))(y19)
 
     #38x38 head
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(darknet.layers[204].output)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(darknet.layers[204].output)
     y38 = Concatenate()([y38, y19_upsample])
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
-    y38 = DarknetConv2D_BN_Leaky(512, (3,3))(y38)
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
-    y38 = DarknetConv2D_BN_Leaky(512, (3,3))(y38)
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
 
-    y38_upsample = compose(DarknetConv2D_BN_Leaky(128, (1,1)), UpSampling2D(2))(y38)
+    y38_upsample = compose(DarknetConv2D_BN_Leaky(int(128*alpha), (1,1)), UpSampling2D(2))(y38)
 
     #76x76 head
-    y76 = DarknetConv2D_BN_Leaky(128, (1,1))(darknet.layers[131].output)
+    y76 = DarknetConv2D_BN_Leaky(int(128*alpha), (1,1))(darknet.layers[131].output)
     y76 = Concatenate()([y76, y38_upsample])
-    y76 = DarknetConv2D_BN_Leaky(128, (1,1))(y76)
-    y76 = DarknetConv2D_BN_Leaky(256, (3,3))(y76)
-    y76 = DarknetConv2D_BN_Leaky(128, (1,1))(y76)
-    y76 = DarknetConv2D_BN_Leaky(256, (3,3))(y76)
-    y76 = DarknetConv2D_BN_Leaky(128, (1,1))(y76)
+    y76 = DarknetConv2D_BN_Leaky(int(128*alpha), (1,1))(y76)
+    y76 = DarknetConv2D_BN_Leaky(int(256*alpha), (3,3))(y76)
+    y76 = DarknetConv2D_BN_Leaky(int(128*alpha), (1,1))(y76)
+    y76 = DarknetConv2D_BN_Leaky(int(256*alpha), (3,3))(y76)
+    y76 = DarknetConv2D_BN_Leaky(int(128*alpha), (1,1))(y76)
 
     #76x76 output
-    y76_output = DarknetConv2D_BN_Leaky(256, (3,3))(y76)
+    y76_output = DarknetConv2D_BN_Leaky(int(256*alpha), (3,3))(y76)
     y76_output = DarknetConv2D(num_anchors*(num_classes+5), (1,1))(y76_output)
 
     #38x38 output
     y76_downsample = ZeroPadding2D(((1,0),(1,0)))(y76)
-    y76_downsample = DarknetConv2D_BN_Leaky(256, (3,3), strides=(2,2))(y76_downsample)
+    y76_downsample = DarknetConv2D_BN_Leaky(int(256*alpha), (3,3), strides=(2,2))(y76_downsample)
     y38 = Concatenate()([y76_downsample, y38])
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
-    y38 = DarknetConv2D_BN_Leaky(512, (3,3))(y38)
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
-    y38 = DarknetConv2D_BN_Leaky(512, (3,3))(y38)
-    y38 = DarknetConv2D_BN_Leaky(256, (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3))(y38)
+    y38 = DarknetConv2D_BN_Leaky(int(256*alpha), (1,1))(y38)
 
-    y38_output = DarknetConv2D_BN_Leaky(512, (3,3))(y38)
+    y38_output = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3))(y38)
     y38_output = DarknetConv2D(num_anchors*(num_classes+5), (1,1))(y38_output)
 
     #19x19 output
     y38_downsample = ZeroPadding2D(((1,0),(1,0)))(y38)
-    y38_downsample = DarknetConv2D_BN_Leaky(512, (3,3), strides=(2,2))(y38_downsample)
+    y38_downsample = DarknetConv2D_BN_Leaky(int(512*alpha), (3,3), strides=(2,2))(y38_downsample)
     y19 = Concatenate()([y38_downsample, y19])
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
-    y19 = DarknetConv2D_BN_Leaky(1024, (3,3))(y19)
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
-    y19 = DarknetConv2D_BN_Leaky(1024, (3,3))(y19)
-    y19 = DarknetConv2D_BN_Leaky(512, (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(1024*alpha), (3,3))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(1024*alpha), (3,3))(y19)
+    y19 = DarknetConv2D_BN_Leaky(int(512*alpha), (1,1))(y19)
 
-    y19_output = DarknetConv2D_BN_Leaky(1024, (3,3))(y19)
+    y19_output = DarknetConv2D_BN_Leaky(int(1024*alpha), (3,3))(y19)
     y19_output = DarknetConv2D(num_anchors*(num_classes+5), (1,1))(y19_output)
 
     yolo4_model = Model(inputs, [y19_output, y38_output, y76_output])
